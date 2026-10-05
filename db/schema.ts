@@ -23,7 +23,13 @@ export const users = pgTable("users", {
   language:text("language"),
   targetDomain:varchar("target_domain").default('http://localhost:3000'),
 gloablInstruction:text("global_instruction"),
+
+lastProcessedSha: varchar("last_processed_commit_sha",{
+length:40,
+})
 });
+
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 

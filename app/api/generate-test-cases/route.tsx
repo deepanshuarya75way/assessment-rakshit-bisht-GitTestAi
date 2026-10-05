@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI, Type } from "@google/genai";
 import { db } from "@/db";
-import { TestCasesTable } from "@/db/schema";
+import { TestCasesTable,repositories } from "@/db/schema";
 import { cookies } from "next/headers";
+import {and,eq} from "drizzle-orm";
+
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
@@ -187,6 +189,57 @@ async function readGithubFile({
   };
 }
 
+function getGithubHeaders(githubToken:string){
+
+  return{
+    Authorization:`Bearer $ {githubToken}`,
+    Accept:"application/vnd.github+json",
+    "User-Agent":"GitTestAi",
+  };
+}
+
+async function getCurrentCommitSha(
+  owner:string,
+  repo:string,
+  branch:string,
+  githubToken:string
+){
+  const response =await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${branch}`,
+    {
+      headers:
+      getGithubHeaders(githubToken),
+      cache:"no-store",
+    }
+  );
+
+  if(!response.ok){
+    throw new Error("Failed to fetch current commit");
+  }
+
+  const data=await response.json();
+  return data.commit.sha;
+}
+
+async function getChangedFiles(
+  owner:string,
+  repo:string,
+  previousSha:string,
+  currentSha:string,
+  githubToken:string){
+  const response =await fetch(`https://api.github.com/repos/${owner}/${repo}/compare/${priviousSha}...&{currentSha}`,{
+    headers:
+      getGithubHeaders(githubToken),
+      cache:"no-store",
+    }
+  );
+
+  if(!response.ok){
+    throw new Error("Failed to compare commits ");
+  }
+  const data=await response.json();
+  return data.files || [];
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -215,18 +268,60 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
-    // 1. Get repo tree
-    const repoFiles = await getRepoTree({
+     
+    const repositoryResult=await db.select().from (repositories)
+    .where (
+      and(
+        eq(repositories.userId,Number(userId)),
+        eq(repositories.repoId,
+          Number(repoId)
+        )
+      )
+    ).limit(1);
+    const repository= repositoryResult[0];
+    const currentCommitSha=await getCurrentCommitSha(
       owner,
       repo,
       branch,
-      githubToken,
-    });
+      githubToken
 
+    );
+
+    const lastProcessedSha=repository?.lastProcessedSha;
+    if(lastProcessedSha&&
+      lastProcessedSha===currentCommitSha
+    ){
+      return NextResponse.json({
+        sucess:true,
+        skipped:true,
+        reason:"No new commits",
+        testCases:[],
+      });
+    }
+
+    
+    let filesToProcess;
+    if(!lastProcessedSha){
+      filesToProcess=await getRepoTree({
+        owner,repo,branch,githubToken
+      });
+    }
+    const changedFiles = await getChangedFiles(
+      owner,
+      repo,
+     lastProcessedSha,
+     currentCommitSha,
+      githubToken,
+    );
+
+    filesToProcess=changedFiles.filter((file:any )=>["added","modified","renamed"].includes(file.status)
+    .filter((file:any))=>isUsefulFile(file.filename)
+  ).map((file:any)
+  
+  )
     // 2. Read useful files
     const fileContents = await Promise.all(
-      repoFiles.map((file: any) =>
+      filesToProcess.map((file: any) =>
         readGithubFile({
           owner,
           repo,
